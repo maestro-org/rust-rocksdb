@@ -1,6 +1,6 @@
 mod util;
 
-use rocksdb::{CompactOptions, Options, ReadOptions, DB};
+use rocksdb::{CompactOptions, Options, ReadOptions, DB, WriteBatch};
 use std::cmp::Ordering;
 use std::iter::FromIterator;
 use util::{U64Comparator, U64Timestamp};
@@ -269,6 +269,77 @@ fn test_comparator_with_column_family_with_ts() {
         // cannot read with timestamp older than full_history_ts_low
         opts.set_timestamp(ts);
         assert!(db.get_cf_opt(&cf, key, &opts).is_err());
+    }
+
+    let _ = DB::destroy(&Options::default(), path);
+}
+
+#[test]
+fn test_comparator_write_batch() {
+    let tempdir = tempfile::Builder::new()
+        .prefix("_path_for_rocksdb_storage_write_batch")
+        .tempdir()
+        .expect("Failed to create temporary path for the _path_for_rocksdb_storage_with_column_family_with_ts.");
+    let path = tempdir.path();
+    let _ = DB::destroy(&Options::default(), path);
+
+    {
+        let mut db_opts = Options::default();
+        db_opts.create_missing_column_families(true);
+        db_opts.create_if_missing(true);
+
+        let mut cf_opts = Options::default();
+        cf_opts.set_comparator_with_ts(
+            U64Comparator::NAME,
+            U64Timestamp::SIZE,
+            Box::new(U64Comparator::compare),
+            Box::new(U64Comparator::compare_ts),
+            Box::new(U64Comparator::compare_without_ts),
+        );
+
+        let cfs = vec![("cf", cf_opts)];
+
+        let db = DB::open_cf_with_opts(&db_opts, path, cfs).unwrap();
+        let cf = db.cf_handle("cf").unwrap();
+
+        let key1 = b"hello0";
+        let key2 = b"hello1";
+        let key3 = b"hello2";
+        
+        let val1 = b"world0";
+        let val2 = b"world1";
+        let val3 = b"world2";
+
+        let ts = U64Timestamp::new(1);
+        let ts2 = U64Timestamp::new(2);
+        let ts3 = U64Timestamp::new(3);
+        
+        let mut wb = WriteBatch::new();
+
+        wb.put_cf_with_ts(&cf, key1, ts, val1);
+        wb.put_cf_with_ts(&cf, key1, ts2, val2);
+        wb.put_cf_with_ts(&cf, key2, ts2, val2);
+        wb.put_cf_with_ts(&cf, key3, ts2, val2);
+    
+        db.write(wb).unwrap();
+        
+        let mut wb = WriteBatch::new();
+        
+        wb.delete_range_cf(&cf, key1, key3);
+        wb.put_cf(&cf, key3, val3);
+        
+        wb.update_timestamps_with_size(ts3, U64Timestamp::SIZE).unwrap();
+        
+        db.write(wb).unwrap();
+        
+        let mut opts = ReadOptions::default();
+        opts.set_timestamp(ts3);
+        
+        assert!(db.get_cf_opt(&cf, key1, &opts).unwrap().is_none());
+        assert!(db.get_cf_opt(&cf, key2, &opts).unwrap().is_none());
+        
+        let value = db.get_cf_opt(&cf, key3, &opts).unwrap();
+        assert_eq!(value.unwrap().as_slice(), val3);
     }
 
     let _ = DB::destroy(&Options::default(), path);

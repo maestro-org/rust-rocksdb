@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{ffi, AsColumnFamilyRef};
+use crate::{ffi, AsColumnFamilyRef, Error};
 use libc::{c_char, c_void, size_t};
 use std::slice;
 
@@ -416,6 +416,31 @@ impl<const TRANSACTION: bool> WriteBatchWithTransaction<TRANSACTION> {
                 log_data.as_ptr() as *const c_char,
                 log_data.len() as size_t,
             );
+        }
+    }
+    
+    /// Updates timestamps for all actions in the write batch. NOTE: All keys must
+    /// use the provided timestamp size.
+    pub fn update_timestamps_with_size<S: AsRef<[u8]>>(
+        &mut self,
+        ts: S,
+        ts_size: usize,
+    ) -> Result<(), Error> {
+        let ts = ts.as_ref();
+
+        unsafe extern "C" fn constant_ts_size(state: *mut c_void, _cf_id: u32) -> size_t {
+            *(state as *const size_t)
+        }
+
+        unsafe {
+            ffi_try!(ffi::rocksdb_writebatch_update_timestamps(
+                self.inner,
+                ts.as_ptr() as *const c_char,
+                ts.len() as size_t,
+                &ts_size as *const usize as *mut c_void,
+                Some(constant_ts_size),
+            ));
+            Ok(())
         }
     }
 
